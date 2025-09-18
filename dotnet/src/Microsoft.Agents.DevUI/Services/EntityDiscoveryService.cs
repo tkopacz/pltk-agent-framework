@@ -20,16 +20,52 @@ public class EntityDiscoveryService
     {
         var entities = new List<EntityInfo>();
 
-        if (string.IsNullOrEmpty(entitiesDir) || !Directory.Exists(entitiesDir))
+        if (string.IsNullOrEmpty(entitiesDir))
         {
-            _logger.LogWarning("Entities directory not found or not specified: {Dir}", entitiesDir);
+            _logger.LogWarning("Entities directory not specified");
             return entities;
         }
 
-        _logger.LogInformation("Discovering entities from directory: {Dir}", entitiesDir);
+        // Resolve the path - try both absolute and relative to current directory
+        var resolvedPath = Path.GetFullPath(entitiesDir);
+        _logger.LogDebug("Attempting to resolve path: {OriginalPath} -> {ResolvedPath}", entitiesDir, resolvedPath);
+
+        // If still not found, try relative to the application base directory
+        if (!Directory.Exists(resolvedPath))
+        {
+            var appBasePath = AppDomain.CurrentDomain.BaseDirectory;
+            var alternativePath = Path.Combine(appBasePath, entitiesDir);
+            _logger.LogDebug("Directory not found at {ResolvedPath}, trying {AlternativePath}", resolvedPath, alternativePath);
+
+            if (Directory.Exists(alternativePath))
+            {
+                resolvedPath = alternativePath;
+            }
+        }
+
+        // Also check the current working directory
+        if (!Directory.Exists(resolvedPath))
+        {
+            var cwdPath = Path.Combine(Directory.GetCurrentDirectory(), entitiesDir);
+            _logger.LogDebug("Still not found, trying relative to CWD: {CwdPath}", cwdPath);
+
+            if (Directory.Exists(cwdPath))
+            {
+                resolvedPath = cwdPath;
+            }
+        }
+
+        if (!Directory.Exists(resolvedPath))
+        {
+            _logger.LogWarning("Entities directory not found: {Dir} (tried: {ResolvedPath}, CWD: {Cwd})",
+                entitiesDir, resolvedPath, Directory.GetCurrentDirectory());
+            return entities;
+        }
+
+        _logger.LogInformation("Discovering entities from directory: {Dir} (resolved: {ResolvedPath})", entitiesDir, resolvedPath);
 
         // Scan for .cs files and try to load types
-        var csFiles = Directory.GetFiles(entitiesDir, "*.cs", SearchOption.AllDirectories);
+        var csFiles = Directory.GetFiles(resolvedPath, "*.cs", SearchOption.AllDirectories);
 
         foreach (var file in csFiles)
         {
@@ -39,8 +75,8 @@ public class EntityDiscoveryService
                 // you might want to compile and load the assemblies dynamically
                 var content = await File.ReadAllTextAsync(file);
 
-                // Look for agent or workflow patterns
-                if (content.Contains(": AIAgent") || content.Contains("public class") && content.Contains("Agent"))
+                // Look for agent patterns
+                if (content.Contains(": AIAgent") || (content.Contains("public class") && content.Contains("Agent")))
                 {
                     var entityId = $"agent_{Path.GetFileNameWithoutExtension(file).ToLowerInvariant()}";
                     var entityInfo = new EntityInfo
@@ -56,7 +92,9 @@ public class EntityDiscoveryService
                     _logger.LogInformation("Discovered agent: {Id}", entityId);
                 }
 
-                if (content.Contains(": Workflow") || content.Contains("public class") && content.Contains("Workflow"))
+                // Look for workflow patterns (including generic workflows like Workflow<string>)
+                if (content.Contains(": Workflow<") || content.Contains(": Workflow") ||
+                    (content.Contains("public class") && content.Contains("Workflow")))
                 {
                     var entityId = $"workflow_{Path.GetFileNameWithoutExtension(file).ToLowerInvariant()}";
                     var entityInfo = new EntityInfo

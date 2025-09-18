@@ -38,4 +38,11 @@
     <PackageReference Include="System.Diagnostics.DiagnosticSource" />
   </ItemGroup>
 
+  <!-- Copy UI files to output directory -->
+  <ItemGroup>
+    <Content Include="ui/**/*">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
 </Project>

@@ -232,6 +232,32 @@ The server discovers entities in two ways:
 1. **Directory Scanning**: Scans `.cs` files for agent/workflow patterns
 2. **In-Memory Registration**: Register entities programmatically
 
+### UI Serving
+
+The DevUI server automatically serves the React frontend from the `/` route:
+
+**Features**:
+- **Static File Serving**: All UI assets served from `ui/` directory
+- **SPA Fallback**: Non-API routes redirect to `index.html` for client-side routing
+- **API Preservation**: API routes (`/v1/*`, `/health`) remain accessible
+- **Auto-Detection**: Falls back to API-only mode if UI files are missing
+
+**UI Directory Structure**:
+```
+Microsoft.Agents.DevUI/
+├── ui/
+│   ├── index.html         # React app entry point
+│   ├── vite.svg          # Favicon
+│   └── assets/           # Built React bundles
+│       ├── index-*.js    # JavaScript bundle
+│       └── index-*.css   # CSS bundle
+```
+
+**Access Points**:
+- **UI**: `http://localhost:8080/` (React DevUI)
+- **API**: `http://localhost:8080/v1/entities` (OpenAI-compatible)
+- **Health**: `http://localhost:8080/health` (Server status)
+
 ### Execution Architecture
 
 The `ExecutionService` provides unified execution for both agents and workflows:
@@ -288,16 +314,16 @@ dotnet build
 - ✅ **Real Agent Execution**: Executes actual agents using Agent Framework
 - ✅ **Real Workflow Execution**: Executes actual workflows with event mapping
 - ✅ **Unified Execution Service**: Single service handles both agents and workflows
-- ⚠️ **No UI Serving**: API only (frontend served separately)
+- ✅ **UI Serving**: Serves React DevUI from `/` route with SPA fallback support
 
 ## Future Enhancements
 
-- [ ] **UI Serving**: Serve DevUI frontend files
 - [ ] **Dynamic Assembly Loading**: Runtime compilation for entity discovery
 - [ ] **Enhanced Streaming**: Restore streaming support (temporarily simplified)
 - [ ] **Authentication/Authorization**: Security layer
 - [ ] **Hot Reload**: Watch file changes for entities
 - [ ] **Advanced Workflow Types**: Support for more complex workflow input types
+- [ ] **UI Build Integration**: Integrate frontend build process with .NET build
 
 ## Troubleshooting
 

@@ -2,6 +2,7 @@ using Microsoft.Agents.DevUI.Services;
 using Microsoft.Agents.DevUI.Models;
 using Microsoft.Extensions.AI.Agents;
 using Microsoft.Agents.Workflows;
+using Microsoft.Extensions.FileProviders;
 
 namespace Microsoft.Agents.DevUI;
 
@@ -80,6 +81,21 @@ public class DevUIServer
         // }
 
         app.UseCors();
+
+        // Serve UI static files if enabled
+        if (_uiEnabled)
+        {
+            var uiDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ui");
+            if (Directory.Exists(uiDirectory))
+            {
+                app.UseStaticFiles(new StaticFileOptions
+                {
+                    FileProvider = new PhysicalFileProvider(uiDirectory),
+                    RequestPath = ""
+                });
+            }
+        }
+
         app.UseRouting();
         app.MapControllers();
 
@@ -112,18 +128,49 @@ public class DevUIServer
         // Serve UI if enabled
         if (_uiEnabled)
         {
-            // In a real implementation, you'd serve the React UI here
-            // For now, just add a simple info endpoint
-            app.MapGet("/", () => new
+            var uiDirectory = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "ui");
+            var indexPath = Path.Combine(uiDirectory, "index.html");
+
+            if (File.Exists(indexPath))
             {
-                message = "Agent Framework DevUI Server",
-                endpoints = new
+                // Serve index.html for the root route and SPA fallback
+                app.MapGet("/", async context =>
                 {
-                    health = "/health",
-                    entities = "/v1/entities",
-                    responses = "/v1/responses"
-                }
-            });
+                    context.Response.ContentType = "text/html";
+                    await context.Response.SendFileAsync(indexPath);
+                });
+
+                // Fallback to index.html for client-side routing (SPA)
+                app.MapFallback(async context =>
+                {
+                    // Only serve index.html for non-API routes
+                    if (!context.Request.Path.StartsWithSegments("/v1") &&
+                        !context.Request.Path.StartsWithSegments("/health"))
+                    {
+                        context.Response.ContentType = "text/html";
+                        await context.Response.SendFileAsync(indexPath);
+                    }
+                    else
+                    {
+                        context.Response.StatusCode = 404;
+                    }
+                });
+            }
+            else
+            {
+                // Fallback endpoint when no UI files are present
+                app.MapGet("/", () => new
+                {
+                    message = "Agent Framework DevUI Server",
+                    status = "UI files not found - API only mode",
+                    endpoints = new
+                    {
+                        health = "/health",
+                        entities = "/v1/entities",
+                        responses = "/v1/responses"
+                    }
+                });
+            }
         }
 
         return app;

@@ -38,7 +38,18 @@ rootCommand.SetHandler(async (entitiesDir, port, host, autoOpen) =>
 
     try
     {
+        // Check if we should load sample entities
+        object[]? entities = null;
+        if (entitiesDir?.Contains("samples") == true)
+        {
+            Console.WriteLine("📦 Loading built-in sample entities...");
+            var weatherAgent = new Microsoft.Agents.DevUI.Samples.WeatherAgent();
+            var simpleWorkflow = new Microsoft.Agents.DevUI.Samples.SimpleWorkflow();
+            entities = new object[] { weatherAgent, simpleWorkflow };
+        }
+
         await DevUI.ServeAsync(
+            entities: entities,
             entitiesDir: entitiesDir,
             port: port,
             host: host,
