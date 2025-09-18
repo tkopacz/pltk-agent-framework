@@ -249,6 +249,7 @@
     <File Path="tests/Directory.Build.props" />
   </Folder>
   <Folder Name="/src/">
+    <Project Path="src/Microsoft.Agents.DevUI/Microsoft.Agents.DevUI.csproj" />
     <Project Path="src/Microsoft.Agents.Orchestration/Microsoft.Agents.Orchestration.csproj" />
     <Project Path="src/Microsoft.Agents.Workflows.Declarative/Microsoft.Agents.Workflows.Declarative.csproj" />
     <Project Path="src/Microsoft.Agents.Workflows/Microsoft.Agents.Workflows.csproj" />
