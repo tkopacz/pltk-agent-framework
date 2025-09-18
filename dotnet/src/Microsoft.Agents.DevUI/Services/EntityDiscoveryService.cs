@@ -84,7 +84,14 @@ public class EntityDiscoveryService
                         Id = entityId,
                         Name = Path.GetFileNameWithoutExtension(file),
                         Type = "agent",
-                        Description = $"Agent from {Path.GetFileName(file)}"
+                        Description = $"Agent from {Path.GetFileName(file)}",
+                        Framework = "agent-framework",
+                        Tools = new List<object>(),
+                        Metadata = new Dictionary<string, object>
+                        {
+                            { "module_path", file },
+                            { "source", "directory" }
+                        }
                     };
 
                     entities.Add(entityInfo);
@@ -103,6 +110,14 @@ public class EntityDiscoveryService
                         Name = Path.GetFileNameWithoutExtension(file),
                         Type = "workflow",
                         Description = $"Workflow from {Path.GetFileName(file)}",
+                        Framework = "agent-framework",
+                        Tools = new List<object>(),
+                        Metadata = new Dictionary<string, object>
+                        {
+                            { "module_path", file },
+                            { "source", "directory" }
+                        },
+                        Executors = new List<string>(),
                         InputSchema = new Dictionary<string, object> { { "type", "string" } },
                         InputTypeName = "String"
                     };
@@ -140,7 +155,14 @@ public class EntityDiscoveryService
             Id = entityId,
             Name = type.Name,
             Type = DetermineEntityType(entity),
-            Description = $"In-memory {type.Name}"
+            Description = $"In-memory {type.Name}",
+            Framework = "agent-framework",
+            Tools = new List<object>(),
+            Metadata = new Dictionary<string, object>
+            {
+                { "source", "in-memory" },
+                { "type_name", type.FullName ?? type.Name }
+            }
         };
 
         // Additional setup for specific types
@@ -148,6 +170,18 @@ public class EntityDiscoveryService
         {
             entityInfo.Name = agent.Name ?? agent.Id;
             entityInfo.Description = agent.Description ?? entityInfo.Description;
+
+            // Add agent-specific metadata
+            entityInfo.Metadata["agent_id"] = agent.Id;
+            if (!string.IsNullOrEmpty(agent.Name))
+                entityInfo.Metadata["agent_name"] = agent.Name;
+        }
+        else if (entityInfo.Type == "workflow")
+        {
+            // Add workflow-specific fields
+            entityInfo.Executors = new List<string>();
+            entityInfo.InputSchema = new Dictionary<string, object> { { "type", "string" } };
+            entityInfo.InputTypeName = "String";
         }
 
         return entityInfo;

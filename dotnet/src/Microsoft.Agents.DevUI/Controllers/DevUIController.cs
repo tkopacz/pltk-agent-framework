@@ -50,7 +50,13 @@ public class DevUIController : ControllerBase
     {
         var entities = _discoveryService.ListEntities();
         _logger.LogInformation("Returning {Count} entities", entities.Count);
-        return Ok(entities);
+
+        // Return in the expected wrapper format to match Python backend
+        var response = new DiscoveryResponse
+        {
+            Entities = entities
+        };
+        return Ok(response);
     }
 
     /// <summary>
@@ -142,7 +148,10 @@ public class DevUIController : ControllerBase
         {
             var threads = _threadService.ListThreads(agentId);
             _logger.LogInformation("Returning {Count} threads for agent {AgentId}", threads.Count, agentId ?? "all");
-            return Ok(threads);
+
+            // Return in the expected wrapper format to match Python backend
+            var response = new { @object = "list", data = threads };
+            return Ok(response);
         }
         catch (Exception ex)
         {
@@ -214,7 +223,10 @@ public class DevUIController : ControllerBase
             }
 
             _logger.LogInformation("Returning {Count} messages for thread {ThreadId}", messages.Count, threadId);
-            return Ok(messages);
+
+            // Return in the expected wrapper format to match Python backend
+            var response = new { @object = "list", data = messages, thread_id = threadId };
+            return Ok(response);
         }
         catch (Exception ex)
         {
