@@ -1,6 +1,6 @@
 ﻿// Copyright (c) Microsoft. All rights reserved.
 
-using System.Collections.Generic;
+using System;
 using System.Collections.ObjectModel;
 using System.Text.Json;
 using System.Threading;
@@ -14,7 +14,7 @@ public class AIContextProviderTests
     public async Task InvokedAsync_ReturnsCompletedTaskAsync()
     {
         var provider = new TestAIContextProvider();
-        var messages = new ReadOnlyCollection<ChatMessage>(new List<ChatMessage>());
+        var messages = new ReadOnlyCollection<ChatMessage>([]);
         var task = provider.InvokedAsync(new(messages));
         Assert.Equal(default, task);
     }
@@ -34,6 +34,18 @@ public class AIContextProviderTests
         var element = default(JsonElement);
         var actual = provider.DeserializeAsync(element);
         Assert.Equal(default, actual);
+    }
+
+    [Fact]
+    public void InvokingContext_Constructor_ThrowsForNullMessages()
+    {
+        Assert.Throws<ArgumentNullException>(() => new AIContextProvider.InvokingContext(null!));
+    }
+
+    [Fact]
+    public void InvokedContext_Constructor_ThrowsForNullMessages()
+    {
+        Assert.Throws<ArgumentNullException>(() => new AIContextProvider.InvokedContext(null!));
     }
 
     private sealed class TestAIContextProvider : AIContextProvider

@@ -2,7 +2,8 @@
 
 import asyncio
 from dataclasses import dataclass
-from typing import Any
+
+from typing_extensions import Never
 
 from agent_framework import (  # Core chat primitives to build LLM requests
     AgentExecutor,  # Wraps an LLM agent for use inside a workflow
@@ -13,8 +14,8 @@ from agent_framework import (  # Core chat primitives to build LLM requests
     Executor,  # Base class for custom Python executors
     Role,  # Enum of chat roles (user, assistant, system)
     WorkflowBuilder,  # Fluent builder for wiring the workflow graph
-    WorkflowCompletedEvent,  # Terminal event carrying the final result
     WorkflowContext,  # Per run context and event bus
+    WorkflowOutputEvent,  # Event emitted when workflow yields output
     handler,  # Decorator to mark an Executor method as invokable
 )
 from agent_framework.azure import AzureChatClient  # Client wrapper for Azure OpenAI chat models
@@ -43,7 +44,7 @@ class DispatchToExperts(Executor):
     """Dispatches the incoming prompt to all expert agent executors for parallel processing (fan out)."""
 
     def __init__(self, expert_ids: list[str], id: str | None = None):
-        super().__init__(id)
+        super().__init__(id=id or "dispatch_to_experts")
         self._expert_ids = expert_ids
 
     @handler
@@ -71,11 +72,11 @@ class AggregateInsights(Executor):
     """Aggregates expert agent responses into a single consolidated result (fan in)."""
 
     def __init__(self, expert_ids: list[str], id: str | None = None):
-        super().__init__(id)
+        super().__init__(id=id or "aggregate_insights")
         self._expert_ids = expert_ids
 
     @handler
-    async def aggregate(self, results: list[AgentExecutorResponse], ctx: WorkflowContext[Any]) -> None:
+    async def aggregate(self, results: list[AgentExecutorResponse], ctx: WorkflowContext[Never, str]) -> None:
         # Map responses to text by executor id for a simple, predictable demo.
         by_id: dict[str, str] = {}
         for r in results:
@@ -101,7 +102,7 @@ class AggregateInsights(Executor):
             f"Legal/Compliance Notes:\n{aggregated.legal}\n"
         )
 
-        await ctx.add_event(WorkflowCompletedEvent(data=consolidated))
+        await ctx.yield_output(consolidated)
 
 
 async def main() -> None:
@@ -151,17 +152,13 @@ async def main() -> None:
     )
 
     # 3) Run with a single prompt and print progress plus the final consolidated output
-    completion: WorkflowCompletedEvent | None = None
     async for event in workflow.run_stream("We are launching a new budget-friendly electric bike for urban commuters."):
         if isinstance(event, AgentRunEvent):
             # Show which agent ran and what step completed for lightweight observability.
             print(event)
-        if isinstance(event, WorkflowCompletedEvent):
-            completion = event
-
-    if completion:
-        print("===== Final Aggregated Output =====")
-        print(completion.data)
+        elif isinstance(event, WorkflowOutputEvent):
+            print("===== Final Aggregated Output =====")
+            print(event.data)
 
 
 if __name__ == "__main__":

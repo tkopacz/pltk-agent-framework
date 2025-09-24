@@ -11,12 +11,18 @@ if TYPE_CHECKING:
 
 from ._edge import EdgeGroup
 from ._edge_runner import EdgeRunner, create_edge_runner
-from ._events import WorkflowCompletedEvent, WorkflowEvent
+from ._events import WorkflowEvent, WorkflowOutputEvent, _framework_event_origin
 from ._executor import Executor
-from ._runner_context import Message, RunnerContext
+from ._runner_context import (
+    _DATACLASS_MARKER,
+    _PYDANTIC_MARKER,
+    CheckpointState,
+    Message,
+    RunnerContext,
+    _decode_checkpoint_value,
+)
 from ._shared_state import SharedState
 from ._typing_utils import is_instance_of
-from ._workflow_context import WorkflowContext
 
 logger = logging.getLogger(__name__)
 
@@ -53,6 +59,7 @@ class Runner:
         self._workflow_id = workflow_id
         self._running = False
         self._resumed_from_checkpoint = False  # Track whether we resumed
+        self.graph_signature_hash: str | None = None
 
         # Set workflow ID in context if provided
         if workflow_id:
@@ -196,16 +203,14 @@ class Runner:
                                         f"from sub-workflow '{sub_request.sub_workflow_id}' "
                                         f"to executor '{executor.id}' for interception."
                                     )
-                                    # Create WorkflowContext with trace context from message
-                                    workflow_ctx: WorkflowContext[Any] = WorkflowContext(
-                                        executor.id,
-                                        [message.source_id],
-                                        self._shared_state,
-                                        self._ctx,
+                                    await executor.execute(
+                                        sub_request,
+                                        [message.source_id],  # source_executor_ids
+                                        self._shared_state,  # shared_state
+                                        self._ctx,  # runner_context
                                         trace_contexts=[message.trace_context] if message.trace_context else None,
                                         source_span_ids=[message.source_span_id] if message.source_span_id else None,
                                     )
-                                    await executor.execute(sub_request, workflow_ctx)
                                     interceptor_found = True
                                     break
                             if interceptor_found:
@@ -218,20 +223,19 @@ class Runner:
                         request_info_executor = self._find_request_info_executor()
 
                         if request_info_executor:
-                            request_info_workflow_ctx: WorkflowContext[None] = WorkflowContext(
-                                request_info_executor.id,
-                                [message.source_id],
-                                self._shared_state,
-                                self._ctx,
-                                trace_contexts=[message.trace_context] if message.trace_context else None,
-                                source_span_ids=[message.source_span_id] if message.source_span_id else None,
-                            )
                             logger.info(
                                 f"Sending sub-workflow request of type '{sub_request.data.__class__.__name__}' "
                                 f"from sub-workflow '{sub_request.sub_workflow_id}' to RequestInfoExecutor "
                                 f"'{request_info_executor.id}'"
                             )
-                            await request_info_executor.execute(sub_request, request_info_workflow_ctx)
+                            await request_info_executor.execute(
+                                sub_request,
+                                [message.source_id],  # source_executor_ids
+                                self._shared_state,  # shared_state
+                                self._ctx,  # runner_context
+                                trace_contexts=[message.trace_context] if message.trace_context else None,
+                                source_span_ids=[message.source_span_id] if message.source_span_id else None,
+                            )
                         else:
                             logger.warning(
                                 f"Sub-workflow request of type '{sub_request.data.__class__.__name__}' "
@@ -243,6 +247,19 @@ class Runner:
             async def _deliver_message_inner(edge_runner: EdgeRunner, message: Message) -> bool:
                 """Inner loop to deliver a single message through an edge runner."""
                 return await edge_runner.send_message(message, self._shared_state, self._ctx)
+
+            def _normalize_message_payload(message: Message) -> None:
+                data = message.data
+                if not isinstance(data, dict):
+                    return
+                if _PYDANTIC_MARKER not in data and _DATACLASS_MARKER not in data:
+                    return
+                try:
+                    decoded = _decode_checkpoint_value(data)
+                except Exception as exc:  # pragma: no cover - defensive
+                    logger.debug("Failed to decode checkpoint payload during delivery: %s", exc)
+                    return
+                message.data = decoded
 
             # Handle SubWorkflowRequestInfo messages specially
             await _deliver_sub_workflow_requests(messages)
@@ -266,11 +283,12 @@ class Runner:
 
             associated_edge_runners = self._edge_runner_map.get(source_executor_id, [])
             for message in non_sub_workflow_messages:
+                _normalize_message_payload(message)
                 # Deliver a message through all edge runners associated with the source executor concurrently.
                 tasks = [_deliver_message_inner(edge_runner, message) for edge_runner in associated_edge_runners]
                 if not tasks:
                     # No outgoing edges. If this is an AgentExecutorResponse, treat it as an
-                    # intentional terminal emission and emit a WorkflowCompletedEvent here.
+                    # intentional terminal emission and emit a WorkflowOutputEvent here.
                     # (Previously this relied on the executor to emit, but AgentExecutor only
                     # sends an AgentExecutorResponse message; centralized completion keeps the
                     # contract consistent with other executors.)
@@ -280,7 +298,10 @@ class Runner:
                         if isinstance(message.data, AgentExecutorResponse):
                             final_messages = message.data.agent_run_response.messages
                             final_text = final_messages[-1].text if final_messages else "(no content)"
-                            await self._ctx.add_event(WorkflowCompletedEvent(final_text))
+                            with _framework_event_origin():
+                                # TODO(moonbox3): does user expect this event to contain the final text?
+                                output_event = WorkflowOutputEvent(data=final_text, source_executor_id="<Runner>")
+                            await self._ctx.add_event(output_event)
                             continue  # Terminal handled
                     except Exception as exc:  # pragma: no cover - defensive
                         logger.debug("Suppressed exception during terminal message type check: %s", exc)
@@ -301,7 +322,10 @@ class Runner:
                             # Emit a single completion event with final text (best-effort extraction)
                             final_messages = message.data.agent_run_response.messages
                             final_text = final_messages[-1].text if final_messages else "(no content)"
-                            await self._ctx.add_event(WorkflowCompletedEvent(final_text))
+                            with _framework_event_origin():
+                                # TODO(moonbox3): does user expect this event to contain the final text?
+                                output_event = WorkflowOutputEvent(data=final_text, source_executor_id="<Runner>")
+                            await self._ctx.add_event(output_event)
                             continue
                     except Exception as exc:  # pragma: no cover
                         logger.debug("Terminal completion emission failed: %s", exc)
@@ -328,6 +352,8 @@ class Runner:
                 "superstep": self._iteration,
                 "checkpoint_type": checkpoint_category,
             }
+            if self.graph_signature_hash:
+                metadata["graph_signature"] = self.graph_signature_hash
             checkpoint_id = await self._ctx.create_checkpoint(metadata=metadata)
             logger.info(f"Created {checkpoint_type} checkpoint: {checkpoint_id}")
             return checkpoint_id
@@ -399,14 +425,45 @@ class Runner:
             return False
 
         try:
-            success = await self._ctx.restore_from_checkpoint(checkpoint_id)
-            if not success:
+            checkpoint = await self._ctx.load_checkpoint(checkpoint_id)
+            if not checkpoint:
+                logger.error(f"Checkpoint {checkpoint_id} not found")
                 return False
 
+            graph_hash = getattr(self, "graph_signature_hash", None)
+            checkpoint_hash = (checkpoint.metadata or {}).get("graph_signature")
+            if graph_hash and checkpoint_hash and graph_hash != checkpoint_hash:
+                raise ValueError(
+                    "Workflow graph has changed since the checkpoint was created. "
+                    "Please rebuild the original workflow before resuming."
+                )
+            if graph_hash and not checkpoint_hash:
+                logger.warning(
+                    "Checkpoint %s does not include graph signature metadata; skipping topology validation.",
+                    checkpoint_id,
+                )
+
+            state: CheckpointState = {
+                "messages": checkpoint.messages,
+                "shared_state": checkpoint.shared_state,
+                "executor_states": checkpoint.executor_states,
+                "iteration_count": checkpoint.iteration_count,
+                "max_iterations": checkpoint.max_iterations,
+            }
+            await self._ctx.set_checkpoint_state(state)
+            if checkpoint.workflow_id:
+                self._ctx.set_workflow_id(checkpoint.workflow_id)
+            self._workflow_id = checkpoint.workflow_id
+
             await self._restore_shared_state_from_context()
-            self.mark_resumed()  # mark resumed; iteration/max already restored from context
+            self.mark_resumed(
+                iteration=checkpoint.iteration_count,
+                max_iterations=checkpoint.max_iterations,
+            )
             logger.info(f"Successfully restored workflow from checkpoint: {checkpoint_id}")
             return True
+        except ValueError:
+            raise
         except Exception as e:
             logger.error(f"Failed to restore from checkpoint {checkpoint_id}: {e}")
             return False

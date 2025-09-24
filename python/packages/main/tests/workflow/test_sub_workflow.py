@@ -4,8 +4,8 @@ import asyncio
 from dataclasses import dataclass
 from typing import Any
 
-import pytest
 from pydantic import Field
+from typing_extensions import Never
 
 from agent_framework import (
     Executor,
@@ -13,7 +13,6 @@ from agent_framework import (
     RequestInfoMessage,
     RequestResponse,
     WorkflowBuilder,
-    WorkflowCompletedEvent,
     WorkflowContext,
     WorkflowExecutor,
     handler,
@@ -55,7 +54,7 @@ class EmailValidator(Executor):
 
     @handler
     async def validate_request(
-        self, request: EmailValidationRequest, ctx: WorkflowContext[RequestInfoMessage | ValidationResult]
+        self, request: EmailValidationRequest, ctx: WorkflowContext[RequestInfoMessage, ValidationResult]
     ) -> None:
         """Validate an email address."""
         # Extract domain and check if it's approved
@@ -63,7 +62,7 @@ class EmailValidator(Executor):
 
         if not domain:
             result = ValidationResult(email=request.email, is_valid=False, reason="Invalid email format")
-            await ctx.add_event(WorkflowCompletedEvent(data=result))
+            await ctx.yield_output(result)
             return
 
         # Request domain check from external source
@@ -72,7 +71,7 @@ class EmailValidator(Executor):
 
     @handler
     async def handle_domain_response(
-        self, response: RequestResponse[DomainCheckRequest, bool], ctx: WorkflowContext[ValidationResult]
+        self, response: RequestResponse[DomainCheckRequest, bool], ctx: WorkflowContext[Never, ValidationResult]
     ) -> None:
         """Handle domain check response with correlation."""
         # Use the original email from the correlated response
@@ -81,7 +80,7 @@ class EmailValidator(Executor):
             is_valid=response.data or False,
             reason="Domain approved" if response.data else "Domain not approved",
         )
-        await ctx.add_event(WorkflowCompletedEvent(data=result))
+        await ctx.yield_output(result)
 
 
 class ParentOrchestrator(Executor):
@@ -115,12 +114,11 @@ class ParentOrchestrator(Executor):
         return RequestResponse[DomainCheckRequest, bool].forward()
 
     @handler
-    async def collect_result(self, result: ValidationResult, ctx: WorkflowContext[None]) -> None:
+    async def collect_result(self, result: ValidationResult, ctx: WorkflowContext) -> None:
         """Collect validation results."""
         self.results.append(result)
 
 
-@pytest.mark.asyncio
 async def test_basic_sub_workflow() -> None:
     """Test basic sub-workflow execution without interception."""
     # Create sub-workflow
@@ -148,11 +146,11 @@ async def test_basic_sub_workflow() -> None:
             await ctx.send_message(request, target_id="email_workflow")
 
         @handler
-        async def collect(self, result: ValidationResult, ctx: WorkflowContext[None]) -> None:
+        async def collect(self, result: ValidationResult, ctx: WorkflowContext) -> None:
             self.result = result
 
     parent = SimpleParent()
-    workflow_executor = WorkflowExecutor(validation_workflow, id="email_workflow")
+    workflow_executor = WorkflowExecutor(validation_workflow, "email_workflow")
     main_request_info = RequestInfoExecutor(id="main_request_info")
 
     main_workflow = (
@@ -185,7 +183,6 @@ async def test_basic_sub_workflow() -> None:
     assert parent.result.is_valid is True
 
 
-@pytest.mark.asyncio
 async def test_sub_workflow_with_interception():
     """Test sub-workflow with parent interception of requests."""
     # Create sub-workflow
@@ -202,8 +199,8 @@ async def test_sub_workflow_with_interception():
 
     # Create parent workflow with interception
     parent = ParentOrchestrator(approved_domains={"example.com", "internal.org"})
-    workflow_executor = WorkflowExecutor(validation_workflow, id="email_workflow")
-    parent_request_info = RequestInfoExecutor()
+    workflow_executor = WorkflowExecutor(validation_workflow, "email_workflow")
+    parent_request_info = RequestInfoExecutor(id="request_info")
 
     main_workflow = (
         WorkflowBuilder()
@@ -248,7 +245,6 @@ async def test_sub_workflow_with_interception():
     assert parent.results[0].reason == "Domain not approved"
 
 
-@pytest.mark.asyncio
 async def test_conditional_forwarding() -> None:
     """Test conditional forwarding with RequestResponse.forward()."""
 
@@ -279,12 +275,12 @@ async def test_conditional_forwarding() -> None:
             return RequestResponse[DomainCheckRequest, bool].forward()
 
         @handler
-        async def collect(self, result: ValidationResult, ctx: WorkflowContext[None]) -> None:
+        async def collect(self, result: ValidationResult, ctx: WorkflowContext) -> None:
             self.result = result
 
     # Setup workflows
     email_validator = EmailValidator()
-    request_info = RequestInfoExecutor()
+    request_info = RequestInfoExecutor(id="request_info")
 
     validation_workflow = (
         WorkflowBuilder()
@@ -295,8 +291,8 @@ async def test_conditional_forwarding() -> None:
     )
 
     parent = ConditionalParent()
-    workflow_executor = WorkflowExecutor(validation_workflow, id="email_workflow")
-    parent_request_info = RequestInfoExecutor()
+    workflow_executor = WorkflowExecutor(validation_workflow, "email_workflow")
+    parent_request_info = RequestInfoExecutor(id="request_info")
 
     main_workflow = (
         WorkflowBuilder()
@@ -326,7 +322,6 @@ async def test_conditional_forwarding() -> None:
     assert parent.result.is_valid is True
 
 
-@pytest.mark.asyncio
 async def test_workflow_scoped_interception() -> None:
     """Test interception scoped to specific sub-workflows."""
 
@@ -363,13 +358,13 @@ async def test_workflow_scoped_interception() -> None:
             return RequestResponse[DomainCheckRequest, bool].forward()
 
         @handler
-        async def collect(self, result: ValidationResult, ctx: WorkflowContext[None]) -> None:
+        async def collect(self, result: ValidationResult, ctx: WorkflowContext) -> None:
             self.results[result.email] = result
 
     # Create two identical sub-workflows
     def create_validation_workflow():
         validator = EmailValidator()
-        request_info = RequestInfoExecutor()
+        request_info = RequestInfoExecutor(id="request_info")
         return (
             WorkflowBuilder()
             .set_start_executor(validator)
@@ -382,9 +377,9 @@ async def test_workflow_scoped_interception() -> None:
     workflow_b = create_validation_workflow()
 
     parent = MultiWorkflowParent()
-    executor_a = WorkflowExecutor(workflow_a, id="workflow_a")
-    executor_b = WorkflowExecutor(workflow_b, id="workflow_b")
-    parent_request_info = RequestInfoExecutor()
+    executor_a = WorkflowExecutor(workflow_a, "workflow_a")
+    executor_b = WorkflowExecutor(workflow_b, "workflow_b")
+    parent_request_info = RequestInfoExecutor(id="request_info")
 
     main_workflow = (
         WorkflowBuilder()
@@ -412,9 +407,102 @@ async def test_workflow_scoped_interception() -> None:
     assert parent.results["user@random.com"].is_valid is True
 
 
+async def test_concurrent_sub_workflow_execution() -> None:
+    """Test that WorkflowExecutor can handle multiple concurrent invocations properly."""
+
+    class ConcurrentProcessor(Executor):
+        """Processor that sends multiple concurrent requests to the same sub-workflow."""
+
+        results: list[ValidationResult] = Field(default_factory=list)
+
+        def __init__(self, **kwargs: Any):
+            super().__init__(id="concurrent_processor", **kwargs)
+
+        @handler
+        async def start(self, emails: list[str], ctx: WorkflowContext[EmailValidationRequest]) -> None:
+            """Send multiple concurrent requests to the same sub-workflow."""
+            # Send all requests concurrently to the same workflow executor
+            for email in emails:
+                request = EmailValidationRequest(email=email)
+                await ctx.send_message(request, target_id="email_workflow")
+
+        @handler
+        async def collect_result(self, result: ValidationResult, ctx: WorkflowContext) -> None:
+            """Collect results from concurrent executions."""
+            self.results.append(result)
+
+    # Create sub-workflow for email validation
+    email_validator = EmailValidator()
+    email_request_info = RequestInfoExecutor(id="email_request_info")
+
+    validation_workflow = (
+        WorkflowBuilder()
+        .set_start_executor(email_validator)
+        .add_edge(email_validator, email_request_info)
+        .add_edge(email_request_info, email_validator)
+        .build()
+    )
+
+    # Create parent workflow
+    processor = ConcurrentProcessor()
+    workflow_executor = WorkflowExecutor(validation_workflow, "email_workflow")
+    parent_request_info = RequestInfoExecutor(id="request_info")
+
+    main_workflow = (
+        WorkflowBuilder()
+        .set_start_executor(processor)
+        .add_edge(processor, workflow_executor)
+        .add_edge(workflow_executor, processor)
+        .add_edge(workflow_executor, parent_request_info)  # For external requests
+        .add_edge(parent_request_info, workflow_executor)  # For SubWorkflowResponse routing
+        .build()
+    )
+
+    # Test concurrent execution with multiple emails
+    emails = [
+        "user1@domain1.com",
+        "user2@domain2.com",
+        "user3@domain3.com",
+        "user4@domain4.com",
+        "user5@domain5.com",
+    ]
+
+    result = await main_workflow.run(emails)
+
+    # Each email should generate one external request
+    request_events = result.get_request_info_events()
+    assert len(request_events) == len(emails)
+
+    # Verify each request corresponds to the correct domain
+    domains_requested = {event.data.domain for event in request_events}  # type: ignore[union-attr]
+    expected_domains = {f"domain{i}.com" for i in range(1, 6)}
+    assert domains_requested == expected_domains
+
+    # Send responses for all requests (approve all domains)
+    responses = {event.request_id: True for event in request_events}
+    await main_workflow.send_responses(responses)
+
+    # All results should be collected
+    assert len(processor.results) == len(emails)
+
+    # Verify each email was processed correctly
+    result_emails = {result.email for result in processor.results}
+    expected_emails = set(emails)
+    assert result_emails == expected_emails
+
+    # All should be valid since we approved all domains
+    for result_obj in processor.results:
+        assert result_obj.is_valid is True
+        assert result_obj.reason == "Domain approved"
+
+    # Verify that concurrent executions were properly isolated
+    # (This is implicitly tested by the fact that we got correct results for all emails)
+
+
 if __name__ == "__main__":
     # Run tests
     asyncio.run(test_basic_sub_workflow())
     asyncio.run(test_sub_workflow_with_interception())
     asyncio.run(test_conditional_forwarding())
     asyncio.run(test_workflow_scoped_interception())
+    asyncio.run(test_concurrent_sub_workflow_execution())

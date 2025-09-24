@@ -104,30 +104,12 @@ internal sealed class JudgeExecutor : ReflectingExecutor<JudgeExecutor>, IMessag
 
     public async ValueTask<NumberSignal> HandleAsync(int message, IWorkflowContext context)
     {
-        if (!this.Tries.HasValue)
-        {
-            this.Tries = 1;
-        }
-        else
-        {
-            this.Tries++;
-        }
+        this.Tries = this.Tries is int tries ? tries + 1 : 1;
 
-        NumberSignal result;
-        if (message == this._targetNumber)
-        {
-            result = NumberSignal.Matched;
-        }
-        else if (message < this._targetNumber)
-        {
-            result = NumberSignal.Below;
-        }
-        else
-        {
-            result = NumberSignal.Above;
-        }
-
-        return result;
+        return
+            message == this._targetNumber ? NumberSignal.Matched :
+            message < this._targetNumber ? NumberSignal.Below :
+            NumberSignal.Above;
     }
 
     protected internal override ValueTask OnCheckpointingAsync(IWorkflowContext context, CancellationToken cancellation = default)
@@ -137,6 +119,6 @@ internal sealed class JudgeExecutor : ReflectingExecutor<JudgeExecutor>, IMessag
 
     protected internal override async ValueTask OnCheckpointRestoredAsync(IWorkflowContext context, CancellationToken cancellation = default)
     {
-        this.Tries = await context.ReadStateAsync<int>("TryCount").ConfigureAwait(false);
+        this.Tries = await context.ReadStateAsync<int?>("TryCount").ConfigureAwait(false) ?? 0;
     }
 }
