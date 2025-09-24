@@ -2,6 +2,7 @@ using Microsoft.Agents.DevUI.Models;
 using Microsoft.Extensions.AI.Agents;
 using Microsoft.Extensions.AI;
 using Microsoft.Agents.Workflows;
+using System.Runtime.CompilerServices;
 
 namespace Microsoft.Agents.DevUI.Services;
 
@@ -44,7 +45,194 @@ public class ExecutionService
     }
 
     /// <summary>
-    /// Execute real agent
+    /// Execute entity with streaming support
+    /// </summary>
+    public async IAsyncEnumerable<object> ExecuteEntityStreamingAsync(string entityId, DevUIExecutionRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        var entityInfo = _discoveryService.GetEntityInfo(entityId);
+        if (entityInfo == null)
+        {
+            throw new InvalidOperationException($"Entity '{entityId}' not found");
+        }
+
+        _logger.LogInformation("Executing entity {EntityId} with streaming", entityId);
+
+        if (entityInfo.Type == "agent")
+        {
+            await foreach (var result in ExecuteAgentStreamingAsync(entityId, request, cancellationToken))
+            {
+                yield return result;
+            }
+        }
+        else
+        {
+            // Execute workflow with real streaming support
+            await foreach (var result in ExecuteWorkflowStreamingAsync(entityId, request, cancellationToken))
+            {
+                yield return result;
+            }
+        }
+    }
+
+    /// <summary>
+    /// Execute agent with streaming support
+    /// </summary>
+    public async IAsyncEnumerable<object> ExecuteAgentStreamingAsync(string entityId, DevUIExecutionRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        // Get the actual agent instance
+        var agent = _discoveryService.GetEntityObject(entityId) as AIAgent;
+        if (agent == null)
+        {
+            var errorEvent = new
+            {
+                id = Guid.NewGuid().ToString(),
+                @object = "error",
+                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                error = new
+                {
+                    message = $"Agent '{entityId}' not found or not accessible",
+                    type = "entity_not_found",
+                    code = "agent_not_found"
+                }
+            };
+            yield return errorEvent;
+            yield break;
+        }
+
+        // Convert request to framework messages and start streaming
+        var messages = ConvertRequestToMessages(request);
+        _logger.LogInformation("Executing agent {AgentId} with streaming, {MessageCount} messages", entityId, messages.Length);
+
+        // Initialize streaming result outside try-catch
+        IAsyncEnumerable<AgentRunResponseUpdate>? streamingResult = null;
+        Exception? startupError = null;
+
+        // Try to start streaming
+        try
+        {
+            streamingResult = agent.RunStreamingAsync(messages, cancellationToken: cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            startupError = ex;
+        }
+
+        // If startup failed, yield error and exit
+        if (startupError != null)
+        {
+            _logger.LogError(startupError, "Error starting agent execution {AgentId}", entityId);
+            var errorEvent = new
+            {
+                id = Guid.NewGuid().ToString(),
+                @object = "error",
+                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                error = new
+                {
+                    message = $"Agent execution failed: {startupError.Message}",
+                    type = "execution_error",
+                    code = "agent_execution_failed"
+                }
+            };
+            yield return errorEvent;
+            yield break;
+        }
+
+        var hasError = false;
+
+        // Process streaming results without try-catch around yield
+        await foreach (var update in streamingResult!.WithCancellation(cancellationToken))
+        {
+            if (cancellationToken.IsCancellationRequested)
+                yield break;
+
+            // Process update outside try-catch
+            var content = update.Text ?? "";
+            Exception? processingError = null;
+
+            // Create OpenAI streaming event
+            object? streamEvent = null;
+            try
+            {
+                streamEvent = new
+                {
+                    id = Guid.NewGuid().ToString(),
+                    @object = "chat.completion.chunk",
+                    created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    model = request.Model,
+                    choices = new[]
+                    {
+                        new
+                        {
+                            index = 0,
+                            delta = new
+                            {
+                                role = "assistant",
+                                content = content
+                            },
+                            finish_reason = (string?)null
+                        }
+                    }
+                };
+            }
+            catch (Exception ex)
+            {
+                processingError = ex;
+            }
+
+            // Handle processing error
+            if (processingError != null)
+            {
+                _logger.LogError(processingError, "Error processing streaming update for agent {AgentId}", entityId);
+                hasError = true;
+                var errorEvent = new
+                {
+                    id = Guid.NewGuid().ToString(),
+                    @object = "error",
+                    created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                    error = new
+                    {
+                        message = $"Streaming error: {processingError.Message}",
+                        type = "streaming_error",
+                        code = "stream_processing_failed"
+                    }
+                };
+                yield return errorEvent;
+                yield break;
+            }
+
+            // Yield the successful event
+            if (streamEvent != null)
+            {
+                yield return streamEvent;
+            }
+        }
+
+        // Send final chunk with finish_reason if no error occurred
+        if (!hasError)
+        {
+            var finalChunk = new
+            {
+                id = Guid.NewGuid().ToString(),
+                @object = "chat.completion.chunk",
+                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                model = request.Model,
+                choices = new[]
+                {
+                    new
+                    {
+                        index = 0,
+                        delta = new { },
+                        finish_reason = "stop"
+                    }
+                }
+            };
+
+            yield return finalChunk;
+        }
+    }
+
+    /// <summary>
+    /// Execute real agent (non-streaming)
     /// </summary>
     private async Task<object> ExecuteAgentAsync(string entityId, DevUIExecutionRequest request)
     {
@@ -75,6 +263,147 @@ public class ExecutionService
         {
             _logger.LogError(ex, "Error executing agent {AgentId}", entityId);
             return CreateErrorResponse(request, $"Agent execution failed: {ex.Message}");
+        }
+    }
+
+    /// <summary>
+    /// Execute workflow with streaming support
+    /// </summary>
+    public async IAsyncEnumerable<object> ExecuteWorkflowStreamingAsync(string entityId, DevUIExecutionRequest request, [EnumeratorCancellation] CancellationToken cancellationToken = default)
+    {
+        // Get the actual workflow instance
+        var workflow = _discoveryService.GetEntityObject(entityId);
+        if (workflow == null)
+        {
+            var errorEvent = new
+            {
+                id = Guid.NewGuid().ToString(),
+                @object = "error",
+                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                error = new
+                {
+                    message = $"Workflow '{entityId}' not found or not accessible",
+                    type = "entity_not_found",
+                    code = "workflow_not_found"
+                }
+            };
+            yield return errorEvent;
+            yield break;
+        }
+
+        // Convert request to appropriate input
+        var inputContent = request.GetLastMessageContent();
+        _logger.LogInformation("Executing workflow {WorkflowId} with streaming input: {Input}", entityId, inputContent);
+
+        // Start workflow execution and capture events
+        Run? run = null;
+        Exception? startupError = null;
+
+        try
+        {
+            // For workflows that accept string input
+            if (workflow is Workflow<string> stringWorkflow)
+            {
+                run = await InProcessExecution.RunAsync(stringWorkflow, inputContent, cancellationToken);
+            }
+            // For workflows that accept ChatMessage[] input
+            else if (workflow is Workflow<ChatMessage[]> messageWorkflow)
+            {
+                var messages = ConvertRequestToMessages(request);
+                run = await InProcessExecution.RunAsync(messageWorkflow, messages, cancellationToken);
+            }
+            else
+            {
+                startupError = new InvalidOperationException($"Unsupported workflow input type: {workflow.GetType()}");
+            }
+        }
+        catch (Exception ex)
+        {
+            startupError = ex;
+        }
+
+        // If startup failed, yield error and exit
+        if (startupError != null)
+        {
+            _logger.LogError(startupError, "Error starting workflow execution {WorkflowId}", entityId);
+            var errorEvent = new
+            {
+                id = Guid.NewGuid().ToString(),
+                @object = "error",
+                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                error = new
+                {
+                    message = $"Workflow execution failed: {startupError.Message}",
+                    type = "execution_error",
+                    code = "workflow_execution_failed"
+                }
+            };
+            yield return errorEvent;
+            yield break;
+        }
+
+        // Process workflow events and convert to streaming format
+        var hasError = false;
+        if (run != null)
+        {
+            foreach (var evt in run.OutgoingEvents)
+            {
+                if (cancellationToken.IsCancellationRequested)
+                    yield break;
+
+                var eventText = ConvertWorkflowEventToText(evt);
+                if (!string.IsNullOrEmpty(eventText))
+                {
+                    var streamEvent = new
+                    {
+                        id = Guid.NewGuid().ToString(),
+                        @object = "chat.completion.chunk",
+                        created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                        model = request.Model,
+                        choices = new[]
+                        {
+                            new
+                            {
+                                index = 0,
+                                delta = new
+                                {
+                                    role = "assistant",
+                                    content = eventText + "\n"
+                                },
+                                finish_reason = (string?)null
+                            }
+                        }
+                    };
+
+                    yield return streamEvent;
+
+                    // Add a small delay to make streaming visible
+                    await Task.Delay(50, cancellationToken);
+                }
+            }
+        }
+
+        // Send final chunk with finish_reason if no error occurred
+        if (!hasError)
+        {
+            var finalChunk = new
+            {
+                id = Guid.NewGuid().ToString(),
+                @object = "chat.completion.chunk",
+                created = DateTimeOffset.UtcNow.ToUnixTimeSeconds(),
+                model = request.Model,
+                choices = new[]
+                {
+                    new
+                    {
+                        index = 0,
+                        delta = new { },
+                        finish_reason = "stop"
+                    }
+                }
+            };
+
+            yield return finalChunk;
         }
     }
 
@@ -206,22 +535,8 @@ public class ExecutionService
     /// </summary>
     private ChatMessage[] ConvertRequestToMessages(DevUIExecutionRequest request)
     {
-        if (request.Messages == null || request.Messages.Count == 0)
-        {
-            // Fallback: create from last message content
-            return [new ChatMessage(ChatRole.User, request.GetLastMessageContent())];
-        }
-
-        return request.Messages.Select(m => new ChatMessage(
-            role: m.Role.ToLowerInvariant() switch
-            {
-                "user" => ChatRole.User,
-                "assistant" => ChatRole.Assistant,
-                "system" => ChatRole.System,
-                _ => ChatRole.User
-            },
-            content: m.Content
-        )).ToArray();
+        // Use the improved parsing from the request model
+        return request.ToChatMessages();
     }
 
     /// <summary>

@@ -2,6 +2,7 @@ using Microsoft.AspNetCore.Mvc;
 using Microsoft.Agents.DevUI.Models;
 using Microsoft.Agents.DevUI.Services;
 using System.Text.Json;
+using System.Text;
 
 namespace Microsoft.Agents.DevUI.Controllers;
 
@@ -88,11 +89,7 @@ public class DevUIController : ControllerBase
                 request.Model, request.Stream);
 
             // Extract entity_id from extra_body
-            string? entityId = null;
-            if (request.ExtraBody?.TryGetValue("entity_id", out var entityIdValue) == true)
-            {
-                entityId = entityIdValue?.ToString();
-            }
+            string? entityId = request.GetEntityId();
 
             if (string.IsNullOrEmpty(entityId))
             {
@@ -106,9 +103,23 @@ public class DevUIController : ControllerBase
                 return NotFound(new { error = $"Entity '{entityId}' not found" });
             }
 
-            // Execute the entity (agent or workflow)
-            var result = await _executionService.ExecuteEntityAsync(entityId, request);
-            return Ok(result);
+            // Handle streaming vs non-streaming
+            if (request.Stream)
+            {
+                // Return Server-Sent Events for streaming
+                Response.Headers.Append("Content-Type", "text/event-stream");
+                Response.Headers.Append("Cache-Control", "no-cache");
+                Response.Headers.Append("Connection", "keep-alive");
+                Response.Headers.Append("Access-Control-Allow-Origin", "*");
+
+                return new StreamingActionResult(_executionService, entityId, request, HttpContext.RequestAborted);
+            }
+            else
+            {
+                // Execute non-streaming
+                var result = await _executionService.ExecuteEntityAsync(entityId, request);
+                return Ok(result);
+            }
         }
         catch (Exception ex)
         {
@@ -239,4 +250,70 @@ public class DevUIController : ControllerBase
 public class CreateThreadRequest
 {
     public string AgentId { get; set; } = "";
+}
+
+/// <summary>
+/// Custom ActionResult for Server-Sent Events streaming
+/// </summary>
+public class StreamingActionResult : IActionResult
+{
+    private readonly ExecutionService _executionService;
+    private readonly string _entityId;
+    private readonly DevUIExecutionRequest _request;
+    private readonly CancellationToken _cancellationToken;
+
+    public StreamingActionResult(ExecutionService executionService, string entityId, DevUIExecutionRequest request, CancellationToken cancellationToken)
+    {
+        _executionService = executionService;
+        _entityId = entityId;
+        _request = request;
+        _cancellationToken = cancellationToken;
+    }
+
+    public async Task ExecuteResultAsync(ActionContext context)
+    {
+        var response = context.HttpContext.Response;
+
+        try
+        {
+            await foreach (var streamEvent in _executionService.ExecuteEntityStreamingAsync(_entityId, _request, _cancellationToken))
+            {
+                if (_cancellationToken.IsCancellationRequested)
+                    break;
+
+                var json = JsonSerializer.Serialize(streamEvent);
+                var eventData = $"data: {json}\n\n";
+                var bytes = Encoding.UTF8.GetBytes(eventData);
+
+                await response.Body.WriteAsync(bytes, _cancellationToken);
+                await response.Body.FlushAsync(_cancellationToken);
+            }
+
+            // Send final [DONE] signal
+            var doneBytes = Encoding.UTF8.GetBytes("data: [DONE]\n\n");
+            await response.Body.WriteAsync(doneBytes, _cancellationToken);
+            await response.Body.FlushAsync(_cancellationToken);
+        }
+        catch (Exception ex)
+        {
+            // Send error event
+            var errorEvent = new
+            {
+                id = Guid.NewGuid().ToString(),
+                @object = "error",
+                error = new
+                {
+                    message = ex.Message,
+                    type = "execution_error"
+                }
+            };
+
+            var errorJson = JsonSerializer.Serialize(errorEvent);
+            var errorData = $"data: {errorJson}\n\n";
+            var errorBytes = Encoding.UTF8.GetBytes(errorData);
+
+            await response.Body.WriteAsync(errorBytes, _cancellationToken);
+            await response.Body.FlushAsync(_cancellationToken);
+        }
+    }
 }

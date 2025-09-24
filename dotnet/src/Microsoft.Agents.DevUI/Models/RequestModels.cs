@@ -1,4 +1,5 @@
 using System.Text.Json.Serialization;
+using Microsoft.Extensions.AI;
 
 namespace Microsoft.Agents.DevUI.Models;
 
@@ -9,6 +10,9 @@ public class DevUIExecutionRequest
 
     [JsonPropertyName("stream")]
     public bool Stream { get; set; } = false;
+
+    [JsonPropertyName("input")]
+    public string? Input { get; set; }
 
     [JsonPropertyName("messages")]
     public List<DevUIRequestMessage>? Messages { get; set; }
@@ -25,9 +29,36 @@ public class DevUIExecutionRequest
         return null;
     }
 
+    public string? GetThreadId()
+    {
+        if (ExtraBody?.TryGetValue("thread_id", out var threadId) == true)
+        {
+            return threadId?.ToString();
+        }
+        return null;
+    }
+
     public string GetLastMessageContent()
     {
+        // First try input field (Python backend format)
+        if (!string.IsNullOrEmpty(Input))
+        {
+            return Input;
+        }
+
+        // Fallback to messages
         return Messages?.LastOrDefault()?.Content ?? "";
+    }
+
+    public ChatMessage[] ToChatMessages()
+    {
+        var content = GetLastMessageContent();
+        if (string.IsNullOrEmpty(content))
+        {
+            return [];
+        }
+
+        return [new ChatMessage(ChatRole.User, content)];
     }
 }
 
