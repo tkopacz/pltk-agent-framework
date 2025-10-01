@@ -6,6 +6,7 @@ using System.Collections.Generic;
 using System.Diagnostics;
 using System.IO;
 using System.Linq;
+using System.Reflection;
 using System.Threading;
 using System.Threading.Tasks;
 using Azure.AI.Agents.Persistent;
@@ -55,13 +56,18 @@ internal static class AgentFactory
         AgentCreationOptions creationOptions = new() { Kernel = kernelBuilder.Build() };
         AzureAIAgentFactory factory = new();
 
+        Console.WriteLine($"ENVIRONMENT: {Environment.CurrentDirectory}");
+        Console.WriteLine($"APPDOMAIN: {AppDomain.CurrentDomain.BaseDirectory}");
+        Console.WriteLine($"DIRECTORY: {Directory.GetCurrentDirectory()}");
+        Console.WriteLine($"ASSEMBLY: {Assembly.GetExecutingAssembly().Location}");
+
         return s_agentMap = (await Task.WhenAll(_agentDefinitions.Select(kvp => CreateAgentAsync(kvp.Key, kvp.Value, cancellationToken)))).ToFrozenDictionary(t => t.Name, t => t.Id);
 
         async Task<(string Name, string? Id)> CreateAgentAsync(string id, string file, CancellationToken cancellationToken)
         {
             try
             {
-                string filePath = Path.Combine("Agents", file);
+                string filePath = Path.Combine(Assembly.GetExecutingAssembly().Location, "Agents", file);
                 Assert.True(File.Exists(filePath), $"Agent definition file not found: {filePath}");
 
                 Debug.WriteLine($"TEST AGENT: Creating - {file}");
