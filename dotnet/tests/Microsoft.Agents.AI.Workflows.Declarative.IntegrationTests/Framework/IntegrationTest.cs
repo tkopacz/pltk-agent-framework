@@ -47,10 +47,24 @@ public abstract class IntegrationTest : IDisposable
 
     internal static string FormatVariablePath(string variableName, string? scope = null) => $"{scope ?? WorkflowFormulaState.DefaultScopeName}.{variableName}";
 
-    protected static IConfigurationRoot InitializeConfig() =>
-        new ConfigurationBuilder()
-            .AddJsonFile("appsettings.Development.json", true)
-            .AddEnvironmentVariables()
-            .AddUserSecrets(Assembly.GetExecutingAssembly())
-            .Build();
+    protected static IConfigurationRoot InitializeConfig()
+    {
+        IConfigurationRoot root =
+            new ConfigurationBuilder()
+                .AddJsonFile("appsettings.Development.json", true)
+                .AddEnvironmentVariables()
+                .AddUserSecrets(Assembly.GetExecutingAssembly())
+                .Build();
+        DisplayConfig(root);
+        return root;
+    }
+
+    private static void DisplayConfig(IConfiguration configuration, string? root = null) // %%% REMOVE
+    {
+        foreach (IConfigurationSection config in configuration.GetChildren())
+        {
+            Console.WriteLine($"CONFIG: {root ?? string.Empty}{(root is null ? string.Empty : ".")}{config.Key}");
+            DisplayConfig(config, config.Key);
+        }
+    }
 }
