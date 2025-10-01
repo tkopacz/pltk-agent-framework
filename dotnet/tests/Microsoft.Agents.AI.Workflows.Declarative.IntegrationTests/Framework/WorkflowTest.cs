@@ -75,6 +75,7 @@ public abstract class WorkflowTest(ITestOutputHelper output) : IntegrationTest(o
         foreach (IConfigurationSection config in configuration.GetChildren())
         {
             this.Output.WriteLine($"CONFIG: {root ?? string.Empty}{(root is null ? string.Empty : ".")}{config.Key}");
+            this.DisplayConfig(config, config.Key);
         }
     }
 
