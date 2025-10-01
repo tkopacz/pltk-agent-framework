@@ -49,8 +49,6 @@ public abstract class WorkflowTest(ITestOutputHelper output) : IntegrationTest(o
     {
         this.Output.WriteLine($"INPUT: {testcase.Setup.Input.Value}");
 
-        this.DisplayConfig(configuration);
-
         AzureAIConfiguration? foundryConfig = configuration.GetSection("AzureAI").Get<AzureAIConfiguration>();
         Assert.NotNull(foundryConfig);
 
@@ -68,15 +66,6 @@ public abstract class WorkflowTest(ITestOutputHelper output) : IntegrationTest(o
                 LoggerFactory = this.Output
             };
         await this.RunAndVerifyAsync<TInput>(testcase, workflowPath, workflowOptions);
-    }
-
-    private void DisplayConfig(IConfiguration configuration, string? root = null)
-    {
-        foreach (IConfigurationSection config in configuration.GetChildren())
-        {
-            this.Output.WriteLine($"CONFIG: {root ?? string.Empty}{(root is null ? string.Empty : ".")}{config.Key}");
-            this.DisplayConfig(config, config.Key);
-        }
     }
 
     protected static object GetInput<TInput>(Testcase testcase) where TInput : notnull =>
