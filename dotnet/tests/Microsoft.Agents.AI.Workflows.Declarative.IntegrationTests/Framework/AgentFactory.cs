@@ -54,7 +54,6 @@ internal static class AgentFactory
         kernelBuilder.Services.AddSingleton(clientProjects);
         AgentCreationOptions creationOptions = new() { Kernel = kernelBuilder.Build() };
         AzureAIAgentFactory factory = new();
-        string repoRoot = WorkflowTest.GetRepoFolder();
 
         return s_agentMap = (await Task.WhenAll(_agentDefinitions.Select(kvp => CreateAgentAsync(kvp.Key, kvp.Value, cancellationToken)))).ToFrozenDictionary(t => t.Name, t => t.Id);
 
@@ -63,10 +62,6 @@ internal static class AgentFactory
             try
             {
                 string filePath = Path.Combine("Agents", file);
-                if (!File.Exists(filePath))
-                {
-                    filePath = Path.Combine(repoRoot, "workflow-samples/setup", file);
-                }
                 Assert.True(File.Exists(filePath), $"Agent definition file not found: {filePath}");
 
                 Debug.WriteLine($"TEST AGENT: Creating - {file}");
